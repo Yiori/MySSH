@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>XTerm.js</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background-color: #0d1117;
+            overflow: hidden;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        #terminal-container {
+            height: 100%;
+            width: 100%;
+        }
+
+        /* Floating Action Button */
+        #fab-btn {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            color: white;
+            font-size: 22px;
+            user-select: none;
+        }
+
+        #fab-btn:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 28px rgba(99, 102, 241, 0.7);
+        }
+
+        #fab-btn.open {
+            transform: rotate(45deg);
+        }
+
+        /* Action Menu */
+        #action-menu {
+            position: fixed;
+            bottom: 82px;
+            right: 24px;
+            z-index: 999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            align-items: flex-end;
+            pointer-events: none;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.2s ease, transform 0.2s ease;
+        }
+
+        #action-menu.visible {
+            pointer-events: all;
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        #action-menu-empty {
+            background: rgba(30, 35, 50, 0.95);
+            color: #6b7280;
+            font-size: 13px;
+            border-radius: 10px;
+            padding: 10px 16px;
+            border: 1px solid rgba(255,255,255,0.08);
+            backdrop-filter: blur(8px);
+            white-space: nowrap;
+        }
+
+        .action-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(20, 25, 40, 0.97);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 10px;
+            padding: 9px 16px;
+            color: #e2e8f0;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            backdrop-filter: blur(8px);
+            transition: background 0.15s, border-color 0.15s, transform 0.1s;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+        }
+
+        .action-item:hover {
+            background: rgba(99, 102, 241, 0.25);
+            border-color: rgba(99, 102, 241, 0.7);
+            transform: translateX(-3px);
+        }
+
+        .action-item::before {
+            content: '⚡';
+            font-size: 14px;
+        }
+
+        /* Overlay to close menu on outside click */
+        #fab-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 998;
+        }
+
+        #fab-overlay.active { display: block; }
+    </style>
+</head>
+<body>
+    <div id="terminal-container"></div>
+
+    <!-- Floating Action Button -->
+    <div id="fab-overlay"></div>
+    <div id="action-menu">
+        <span id="action-menu-empty">Nenhuma ação configurada</span>
+    </div>
+    <button id="fab-btn" title="Ações Rápidas">+</button>
+
+    <script>
+        // ── Terminal setup ──────────────────────────────────────────────
+        const term = new Terminal({
+            cursorBlink: true,
+            theme: {
+                background: '#0d1117',
+                foreground: '#e2e8f0',
+                cursor: '#6366f1',
+                selectionBackground: 'rgba(99,102,241,0.3)',
+                black: '#1e2030',
+                brightBlack: '#444b6a',
+                blue: '#6366f1',
+                brightBlue: '#8b5cf6',
+                cyan: '#22d3ee',
+                green: '#4ade80',
+                red: '#f87171',
+                yellow: '#facc15',
+                white: '#e2e8f0',
+                brightWhite: '#f8fafc'
+            }
+        });
+
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(document.getElementById('terminal-container'));
+        fitAddon.fit();
+
+        window.addEventListener('resize', () => {
+            fitAddon.fit();
+            postToHost({ type: 'resize', cols: term.cols, rows: term.rows });
+        });
+
+        term.onData(data => postToHost({ type: 'input', data }));
+
+        function writeToTerminal(data) { term.write(data); }
+
+        function postToHost(obj) {
+            if (window.chrome && window.chrome.webview)
+                window.chrome.webview.postMessage(JSON.stringify(obj));
+        }
+
+        // Notify C# terminal is ready
+        postToHost({ type: 'ready', cols: term.cols, rows: term.rows });
+
+        // ── FAB / Actions ───────────────────────────────────────────────
+        const fabBtn    = document.getElementById('fab-btn');
+        const menu      = document.getElementById('action-menu');
+        const overlay   = document.getElementById('fab-overlay');
+        const emptyMsg  = document.getElementById('action-menu-empty');
+
+        let menuOpen = false;
+
+        function openMenu()  {
+            menuOpen = true;
+            menu.classList.add('visible');
+            fabBtn.classList.add('open');
+            overlay.classList.add('active');
+        }
+
+        function closeMenu() {
+            menuOpen = false;
+            menu.classList.remove('visible');
+            fabBtn.classList.remove('open');
+            overlay.classList.remove('active');
+        }
+
+        fabBtn.addEventListener('click', () => menuOpen ? closeMenu() : openMenu());
+        overlay.addEventListener('click', closeMenu);
+
+        // Called from C# to load actions list
+        function loadActions(actionsJson) {
+            const actions = JSON.parse(actionsJson);
+            // Remove existing action items (keep empty message element)
+            document.querySelectorAll('.action-item').forEach(el => el.remove());
+
+            if (!actions || actions.length === 0) {
+                emptyMsg.style.display = '';
+                return;
+            }
+
+            emptyMsg.style.display = 'none';
+
+            actions.forEach(action => {
+                const btn = document.createElement('button');
+                btn.className = 'action-item';
+                btn.textContent = action.Name;
+                btn.addEventListener('click', () => {
+                    closeMenu();
+                    postToHost({ type: 'action', command: action.Command });
+                });
+                menu.appendChild(btn);
+            });
+        }
+    </script>
+</body>
+</html>
