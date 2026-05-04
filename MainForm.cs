@@ -66,7 +66,11 @@ namespace MySSH
         private TextBox _txtPassword;
         private Button _btnConnect;
         
-        // Terminal Tab
+        // Local Terminal Tab
+        private TabPage _tabLocalTerminal;
+        private Microsoft.Web.WebView2.WinForms.WebView2 _localWebView;
+        
+        // Remote Terminal Tab
         private TabPage _tabTerminal;
         private Microsoft.Web.WebView2.WinForms.WebView2 _webView;
         
@@ -89,6 +93,7 @@ namespace MySSH
 
         private AppConfig _config;
         private SshManager _sshManager;
+        private LocalTerminalManager _localTerminalManager;
 
         public MainForm()
         {
@@ -97,6 +102,10 @@ namespace MySSH
             _sshManager = new SshManager();
             _sshManager.OnDataReceived += OnTerminalDataReceived;
             _sshManager.OnDisconnected += OnDisconnected;
+
+            _localTerminalManager = new LocalTerminalManager();
+            _localTerminalManager.OnDataReceived += OnLocalTerminalDataReceived;
+            _localTerminalManager.OnDisconnected += OnLocalTerminalDisconnected;
         }
 
         private void InitializeComponent()
@@ -109,16 +118,19 @@ namespace MySSH
 
             // Initialize Tabs
             _tabConfig = new TabPage("Configurações");
-            _tabTerminal = new TabPage("Terminal");
+            _tabLocalTerminal = new TabPage("Terminal Local");
+            _tabTerminal = new TabPage("Terminal Remoto");
             _tabSftp = new TabPage("SFTP");
             _tabActions = new TabPage("Ações Rápidas");
 
             InitializeConfigTab();
+            InitializeLocalTerminalTab();
             InitializeTerminalTab();
             InitializeSftpTab();
             InitializeActionsTab();
 
             _tabControl.TabPages.Add(_tabConfig);
+            _tabControl.TabPages.Add(_tabLocalTerminal);
             _tabControl.TabPages.Add(_tabTerminal);
             _tabControl.TabPages.Add(_tabSftp);
             _tabControl.TabPages.Add(_tabActions);
@@ -155,6 +167,69 @@ namespace MySSH
             _tabConfig.Controls.Add(panel);
         }
 
+        private async void InitializeLocalTerminalTab()
+        {
+            _localWebView = new Microsoft.Web.WebView2.WinForms.WebView2 { Dock = DockStyle.Fill };
+            _tabLocalTerminal.Controls.Add(_localWebView);
+            
+            var userDataFolder = Path.Combine(Path.GetTempPath(), "MySSH_WebView2_Local");
+            var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+            await _localWebView.EnsureCoreWebView2Async(env);
+
+            string htmlPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "terminal.html");
+            _localWebView.CoreWebView2.WebMessageReceived += LocalWebView_WebMessageReceived;
+            _localWebView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
+        }
+
+        private void LocalWebView_WebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            var message = e.TryGetWebMessageAsString();
+            var data = JsonConvert.DeserializeObject<dynamic>(message);
+
+            if (data.type == "input")
+            {
+                string input = data.data;
+                _localTerminalManager.WriteToTerminal(input);
+            }
+            else if (data.type == "action")
+            {
+                string command = (string)data.command;
+                _localTerminalManager.WriteToTerminal(command + "\r");
+            }
+            else if (data.type == "ready" || data.type == "resize")
+            {
+                _localTerminalManager.Start();
+            }
+        }
+
+        private void OnLocalTerminalDataReceived(string data)
+        {
+            if (InvokeRequired)
+            {
+                Invoke(new Action<string>(OnLocalTerminalDataReceived), data);
+                return;
+            }
+            
+            System.Diagnostics.Debug.WriteLine("LOCAL TERM: " + data);
+            System.IO.File.AppendAllText("local_term_debug.txt", data);
+
+            if (_localWebView != null && _localWebView.CoreWebView2 != null)
+            {
+                var encodedData = JsonConvert.SerializeObject(data);
+                _localWebView.CoreWebView2.ExecuteScriptAsync($"writeToTerminal({encodedData});");
+            }
+        }
+
+        private void OnLocalTerminalDisconnected()
+        {
+            if (InvokeRequired)
+            {
+                Invoke(new Action(OnLocalTerminalDisconnected));
+                return;
+            }
+            OnLocalTerminalDataReceived("\r\n[Processo local encerrado]\r\n");
+        }
+
         private async void InitializeTerminalTab()
         {
             _webView = new Microsoft.Web.WebView2.WinForms.WebView2 { Dock = DockStyle.Fill };
@@ -165,9 +240,8 @@ namespace MySSH
             await _webView.EnsureCoreWebView2Async(env);
 
             string htmlPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "terminal.html");
-            _webView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
-            
             _webView.CoreWebView2.WebMessageReceived += WebView_WebMessageReceived;
+            _webView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
         }
 
         private void InitializeActionsTab()
@@ -331,6 +405,7 @@ namespace MySSH
             ConfigManager.Save(_config);
             
             _sshManager?.Dispose();
+            _localTerminalManager?.Dispose();
         }
 
         private void MainForm_KeyDown(object sender, KeyEventArgs e)
