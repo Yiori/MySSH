@@ -126,6 +126,8 @@ namespace MySSH
 
             this.Load += MainForm_Load;
             this.FormClosing += MainForm_FormClosing;
+            this.KeyPreview = true;
+            this.KeyDown += MainForm_KeyDown;
         }
 
         private void InitializeConfigTab()
@@ -329,6 +331,20 @@ namespace MySSH
             ConfigManager.Save(_config);
             
             _sshManager?.Dispose();
+        }
+
+        private void MainForm_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.F5 && _tabControl.SelectedTab == _tabSftp)
+            {
+                if (!string.IsNullOrEmpty(_txtLocalPath.Text))
+                    LoadLocalDirectory(_txtLocalPath.Text);
+                
+                if (!string.IsNullOrEmpty(_txtRemotePath.Text))
+                    LoadRemoteDirectory(_txtRemotePath.Text);
+                    
+                e.Handled = true;
+            }
         }
 
         private void BtnConnect_Click(object sender, EventArgs e)
