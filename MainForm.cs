@@ -3,9 +3,58 @@ using System.IO;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Newtonsoft.Json;
+using System.Runtime.InteropServices;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace MySSH
 {
+    public static class IconHelper
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SHFILEINFO
+        {
+            public IntPtr hIcon;
+            public int iIcon;
+            public uint dwAttributes;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string szDisplayName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
+            public string szTypeName;
+        };
+
+        [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+        public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbSizeFileInfo, uint uFlags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool DestroyIcon(IntPtr hIcon);
+
+        public const uint SHGFI_ICON = 0x100;
+        public const uint SHGFI_SMALLICON = 0x1;
+        public const uint SHGFI_USEFILEATTRIBUTES = 0x10;
+        public const uint FILE_ATTRIBUTE_NORMAL = 0x80;
+        public const uint FILE_ATTRIBUTE_DIRECTORY = 0x10;
+
+        public static System.Drawing.Icon GetIcon(string extension, bool isDirectory)
+        {
+            SHFILEINFO shinfo = new SHFILEINFO();
+            uint flags = SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES;
+            uint attributes = isDirectory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+            
+            string path = isDirectory ? "folder" : ("file" + extension);
+
+            SHGetFileInfo(path, attributes, ref shinfo, (uint)Marshal.SizeOf(shinfo), flags);
+            if (shinfo.hIcon != IntPtr.Zero)
+            {
+                System.Drawing.Icon icon = (System.Drawing.Icon)System.Drawing.Icon.FromHandle(shinfo.hIcon).Clone();
+                DestroyIcon(shinfo.hIcon);
+                return icon;
+            }
+            return System.Drawing.SystemIcons.WinLogo;
+        }
+    }
+
     public partial class MainForm : Form
     {
         private TabControl _tabControl;
@@ -24,11 +73,15 @@ namespace MySSH
         // SFTP Tab
         private TabPage _tabSftp;
         private TextBox _txtLocalPath;
-        private ListBox _lstLocal;
+        private ListView _lvwLocal;
         private TextBox _txtRemotePath;
-        private ListBox _lstRemote;
+        private ListView _lvwRemote;
         private Button _btnUpload;
         private Button _btnDownload;
+        private ImageList _sftpImageList;
+        private Dictionary<string, int> _iconCache;
+        private ProgressBar _progressBar;
+        private TextBox _txtSftpLog;
 
         // Actions Tab
         private TabPage _tabActions;
@@ -155,6 +208,14 @@ namespace MySSH
 
         private void InitializeSftpTab()
         {
+            _sftpImageList = new ImageList { ImageSize = new System.Drawing.Size(16, 16), ColorDepth = ColorDepth.Depth32Bit };
+            _iconCache = new Dictionary<string, int>();
+
+            var mainPanel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+            mainPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            mainPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
+            mainPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
+
             var splitContainer = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical };
 
             // Local Panel
@@ -167,9 +228,28 @@ namespace MySSH
             _txtLocalPath.KeyDown += TxtLocalPath_KeyDown;
             localPanel.Controls.Add(_txtLocalPath, 0, 0);
 
-            _lstLocal = new ListBox { Dock = DockStyle.Fill };
-            _lstLocal.DoubleClick += LstLocal_DoubleClick;
-            localPanel.Controls.Add(_lstLocal, 0, 1);
+            _lvwLocal = new ListView 
+            { 
+                Dock = DockStyle.Fill, 
+                View = View.Details, 
+                FullRowSelect = true,
+                HideSelection = false,
+                SmallImageList = _sftpImageList
+            };
+            _lvwLocal.Columns.Add("Nome", 200);
+            _lvwLocal.Columns.Add("Tamanho", 80);
+            _lvwLocal.Columns.Add("Tipo", 80);
+            _lvwLocal.Columns.Add("Modificado", 120);
+            _lvwLocal.DoubleClick += LvwLocal_DoubleClick;
+            _lvwLocal.KeyDown += LvwLocal_KeyDown;
+            
+            var localMenu = new ContextMenuStrip();
+            var localDelete = new ToolStripMenuItem("Excluir");
+            localDelete.Click += LocalDelete_Click;
+            localMenu.Items.Add(localDelete);
+            _lvwLocal.ContextMenuStrip = localMenu;
+            
+            localPanel.Controls.Add(_lvwLocal, 0, 1);
 
             _btnUpload = new Button { Text = "Upload >>", Dock = DockStyle.Fill };
             _btnUpload.Click += BtnUpload_Click;
@@ -185,9 +265,28 @@ namespace MySSH
             _txtRemotePath.KeyDown += TxtRemotePath_KeyDown;
             remotePanel.Controls.Add(_txtRemotePath, 0, 0);
 
-            _lstRemote = new ListBox { Dock = DockStyle.Fill };
-            _lstRemote.DoubleClick += LstRemote_DoubleClick;
-            remotePanel.Controls.Add(_lstRemote, 0, 1);
+            _lvwRemote = new ListView 
+            { 
+                Dock = DockStyle.Fill, 
+                View = View.Details, 
+                FullRowSelect = true,
+                HideSelection = false,
+                SmallImageList = _sftpImageList
+            };
+            _lvwRemote.Columns.Add("Nome", 200);
+            _lvwRemote.Columns.Add("Tamanho", 80);
+            _lvwRemote.Columns.Add("Tipo", 80);
+            _lvwRemote.Columns.Add("Modificado", 120);
+            _lvwRemote.DoubleClick += LvwRemote_DoubleClick;
+            _lvwRemote.KeyDown += LvwRemote_KeyDown;
+            
+            var remoteMenu = new ContextMenuStrip();
+            var remoteDelete = new ToolStripMenuItem("Excluir");
+            remoteDelete.Click += RemoteDelete_Click;
+            remoteMenu.Items.Add(remoteDelete);
+            _lvwRemote.ContextMenuStrip = remoteMenu;
+            
+            remotePanel.Controls.Add(_lvwRemote, 0, 1);
 
             _btnDownload = new Button { Text = "<< Download", Dock = DockStyle.Fill };
             _btnDownload.Click += BtnDownload_Click;
@@ -196,7 +295,14 @@ namespace MySSH
             splitContainer.Panel1.Controls.Add(localPanel);
             splitContainer.Panel2.Controls.Add(remotePanel);
 
-            _tabSftp.Controls.Add(splitContainer);
+            _progressBar = new ProgressBar { Dock = DockStyle.Fill, Style = ProgressBarStyle.Continuous };
+            _txtSftpLog = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical };
+
+            mainPanel.Controls.Add(splitContainer, 0, 0);
+            mainPanel.Controls.Add(_progressBar, 0, 1);
+            mainPanel.Controls.Add(_txtSftpLog, 0, 2);
+
+            _tabSftp.Controls.Add(mainPanel);
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -329,17 +435,61 @@ namespace MySSH
 
         #region SFTP Logic
 
+        private void LogSftp(string message)
+        {
+            if (InvokeRequired) { Invoke(new Action<string>(LogSftp), message); return; }
+            _txtSftpLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}\r\n");
+        }
+
+        private void UpdateProgress(int percentage)
+        {
+            if (InvokeRequired) { Invoke(new Action<int>(UpdateProgress), percentage); return; }
+            if (percentage < 0) percentage = 0;
+            if (percentage > 100) percentage = 100;
+            _progressBar.Value = percentage;
+        }
+
+        private int GetIconIndex(string extension, bool isDirectory)
+        {
+            string key = isDirectory ? "DIR" : extension.ToLower();
+            if (_iconCache.ContainsKey(key))
+                return _iconCache[key];
+
+            var icon = IconHelper.GetIcon(extension, isDirectory);
+            _sftpImageList.Images.Add(key, icon);
+            int index = _sftpImageList.Images.Count - 1;
+            _iconCache[key] = index;
+            return index;
+        }
+
+        private string FormatSize(long bytes)
+        {
+            string[] suf = { "B", "KB", "MB", "GB", "TB" };
+            if (bytes == 0) return "0 B";
+            int place = Convert.ToInt32(Math.Floor(Math.Log(bytes, 1024)));
+            double num = Math.Round(bytes / Math.Pow(1024, place), 1);
+            return $"{num} {suf[place]}";
+        }
+
         private void LoadLocalDirectory(string path)
         {
             try
             {
-                _lstLocal.Items.Clear();
-                _lstLocal.Items.Add("..");
-                var dirs = Directory.GetDirectories(path);
-                var files = Directory.GetFiles(path);
+                _lvwLocal.Items.Clear();
+                int upImgIndex = GetIconIndex("", true);
+                _lvwLocal.Items.Add(new ListViewItem(new[] { "..", "", "", "" }, upImgIndex) { Tag = true });
+                var dirInfo = new DirectoryInfo(path);
 
-                foreach (var d in dirs) _lstLocal.Items.Add($"[DIR] {Path.GetFileName(d)}");
-                foreach (var f in files) _lstLocal.Items.Add(Path.GetFileName(f));
+                foreach (var d in dirInfo.GetDirectories())
+                {
+                    int imgIndex = GetIconIndex("", true);
+                    _lvwLocal.Items.Add(new ListViewItem(new[] { d.Name, "", "Pasta", d.LastWriteTime.ToString("g") }, imgIndex) { Tag = true });
+                }
+                foreach (var f in dirInfo.GetFiles())
+                {
+                    int imgIndex = GetIconIndex(f.Extension, false);
+                    _lvwLocal.Items.Add(new ListViewItem(new[] { f.Name, FormatSize(f.Length), f.Extension, f.LastWriteTime.ToString("g") }, imgIndex) { Tag = false });
+                }
 
                 _txtLocalPath.Text = path;
                 _config.LastLocalPath = path;
@@ -357,16 +507,30 @@ namespace MySSH
 
             try
             {
-                _lstRemote.Items.Clear();
+                _lvwRemote.Items.Clear();
                 var items = _sshManager.ListDirectory(path);
 
                 foreach (var item in items)
                 {
                     if (item.Name == ".") continue;
+                    if (item.Name == "..")
+                    {
+                        int upImgIndex = GetIconIndex("", true);
+                        _lvwRemote.Items.Add(new ListViewItem(new[] { "..", "", "", "" }, upImgIndex) { Tag = true });
+                        continue;
+                    }
+
                     if (item.IsDirectory)
-                        _lstRemote.Items.Add($"[DIR] {item.Name}");
+                    {
+                        int imgIndex = GetIconIndex("", true);
+                        _lvwRemote.Items.Add(new ListViewItem(new[] { item.Name, "", "Pasta", item.LastWriteTime.ToString("g") }, imgIndex) { Tag = true });
+                    }
                     else
-                        _lstRemote.Items.Add(item.Name);
+                    {
+                        string ext = Path.GetExtension(item.Name);
+                        int imgIndex = GetIconIndex(ext, false);
+                        _lvwRemote.Items.Add(new ListViewItem(new[] { item.Name, FormatSize(item.Attributes.Size), "Arquivo", item.LastWriteTime.ToString("g") }, imgIndex) { Tag = false });
+                    }
                 }
 
                 _txtRemotePath.Text = path;
@@ -379,10 +543,12 @@ namespace MySSH
             }
         }
 
-        private void LstLocal_DoubleClick(object sender, EventArgs e)
+        private void LvwLocal_DoubleClick(object sender, EventArgs e)
         {
-            if (_lstLocal.SelectedItem == null) return;
-            string selected = _lstLocal.SelectedItem.ToString();
+            if (_lvwLocal.SelectedItems.Count == 0) return;
+            var item = _lvwLocal.SelectedItems[0];
+            string selected = item.Text;
+            bool isDir = item.Tag is bool b && b;
             
             try
             {
@@ -391,31 +557,30 @@ namespace MySSH
                     var parent = Directory.GetParent(_txtLocalPath.Text);
                     if (parent != null) LoadLocalDirectory(parent.FullName);
                 }
-                else if (selected.StartsWith("[DIR] "))
+                else if (isDir)
                 {
-                    string dirName = selected.Substring(6);
-                    LoadLocalDirectory(Path.Combine(_txtLocalPath.Text, dirName));
+                    LoadLocalDirectory(Path.Combine(_txtLocalPath.Text, selected));
                 }
             }
             catch { }
         }
 
-        private void LstRemote_DoubleClick(object sender, EventArgs e)
+        private void LvwRemote_DoubleClick(object sender, EventArgs e)
         {
-            if (_lstRemote.SelectedItem == null || !_sshManager.IsConnected) return;
-            string selected = _lstRemote.SelectedItem.ToString();
+            if (_lvwRemote.SelectedItems.Count == 0 || !_sshManager.IsConnected) return;
+            var item = _lvwRemote.SelectedItems[0];
+            string selected = item.Text;
+            bool isDir = item.Tag is bool b && b;
 
             try
             {
                 if (selected == "..")
                 {
-                    // Basic remote parent directory logic
                     LoadRemoteDirectory($"{_txtRemotePath.Text}/..");
                 }
-                else if (selected.StartsWith("[DIR] "))
+                else if (isDir)
                 {
-                    string dirName = selected.Substring(6);
-                    string newPath = _txtRemotePath.Text.EndsWith("/") ? $"{_txtRemotePath.Text}{dirName}" : $"{_txtRemotePath.Text}/{dirName}";
+                    string newPath = _txtRemotePath.Text.EndsWith("/") ? $"{_txtRemotePath.Text}{selected}" : $"{_txtRemotePath.Text}/{selected}";
                     LoadRemoteDirectory(newPath);
                 }
             }
@@ -440,45 +605,153 @@ namespace MySSH
             }
         }
 
-        private void BtnUpload_Click(object sender, EventArgs e)
+        private async void BtnUpload_Click(object sender, EventArgs e)
         {
-            if (!_sshManager.IsConnected || _lstLocal.SelectedItem == null) return;
-            string selected = _lstLocal.SelectedItem.ToString();
-            if (selected.StartsWith("[DIR] ") || selected == "..") return;
+            if (!_sshManager.IsConnected || _lvwLocal.SelectedItems.Count == 0) return;
+            var item = _lvwLocal.SelectedItems[0];
+            string selected = item.Text;
+            bool isDir = item.Tag is bool b && b;
+            if (isDir || selected == "..") return;
 
             string localPath = Path.Combine(_txtLocalPath.Text, selected);
             string remotePath = _txtRemotePath.Text.EndsWith("/") ? $"{_txtRemotePath.Text}{selected}" : $"{_txtRemotePath.Text}/{selected}";
 
+            _btnUpload.Enabled = false;
+            _btnDownload.Enabled = false;
+            _progressBar.Value = 0;
+            LogSftp($"Iniciando upload: {selected}");
+
             try
             {
-                _sshManager.UploadFile(localPath, remotePath);
-                MessageBox.Show("Upload concluído!");
+                long totalSize = new FileInfo(localPath).Length;
+                
+                await Task.Run(() =>
+                {
+                    _sshManager.UploadFile(localPath, remotePath, (uploaded) => 
+                    {
+                        if (totalSize > 0)
+                        {
+                            int percentage = (int)((uploaded * 100) / (ulong)totalSize);
+                            UpdateProgress(percentage);
+                        }
+                    });
+                });
+                
+                LogSftp($"Upload concluído: {selected}");
                 LoadRemoteDirectory(_txtRemotePath.Text);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Erro no upload: {ex.Message}");
+                LogSftp($"Erro no upload: {ex.Message}");
+                MessageBox.Show($"Erro no upload: {ex.Message}", "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                _btnUpload.Enabled = true;
+                _btnDownload.Enabled = true;
+                _progressBar.Value = 0;
             }
         }
 
-        private void BtnDownload_Click(object sender, EventArgs e)
+        private async void BtnDownload_Click(object sender, EventArgs e)
         {
-            if (!_sshManager.IsConnected || _lstRemote.SelectedItem == null) return;
-            string selected = _lstRemote.SelectedItem.ToString();
-            if (selected.StartsWith("[DIR] ") || selected == "..") return;
+            if (!_sshManager.IsConnected || _lvwRemote.SelectedItems.Count == 0) return;
+            var item = _lvwRemote.SelectedItems[0];
+            string selected = item.Text;
+            bool isDir = item.Tag is bool b && b;
+            if (isDir || selected == "..") return;
 
             string remotePath = _txtRemotePath.Text.EndsWith("/") ? $"{_txtRemotePath.Text}{selected}" : $"{_txtRemotePath.Text}/{selected}";
             string localPath = Path.Combine(_txtLocalPath.Text, selected);
 
+            _btnUpload.Enabled = false;
+            _btnDownload.Enabled = false;
+            _progressBar.Value = 0;
+            LogSftp($"Iniciando download: {selected}");
+
             try
             {
-                _sshManager.DownloadFile(remotePath, localPath);
-                MessageBox.Show("Download concluído!");
+                long totalSize = _sshManager.GetRemoteFileSize(remotePath);
+
+                await Task.Run(() =>
+                {
+                    _sshManager.DownloadFile(remotePath, localPath, (downloaded) => 
+                    {
+                        if (totalSize > 0)
+                        {
+                            int percentage = (int)((downloaded * 100) / (ulong)totalSize);
+                            UpdateProgress(percentage);
+                        }
+                    });
+                });
+
+                LogSftp($"Download concluído: {selected}");
                 LoadLocalDirectory(_txtLocalPath.Text);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Erro no download: {ex.Message}");
+                LogSftp($"Erro no download: {ex.Message}");
+                MessageBox.Show($"Erro no download: {ex.Message}", "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                _btnUpload.Enabled = true;
+                _btnDownload.Enabled = true;
+                _progressBar.Value = 0;
+            }
+        }
+
+        private void LocalDelete_Click(object sender, EventArgs e) => DeleteSelectedLocal();
+        private void LvwLocal_KeyDown(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Delete) DeleteSelectedLocal(); }
+
+        private void RemoteDelete_Click(object sender, EventArgs e) => DeleteSelectedRemote();
+        private void LvwRemote_KeyDown(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Delete) DeleteSelectedRemote(); }
+
+        private void DeleteSelectedLocal()
+        {
+            if (_lvwLocal.SelectedItems.Count == 0) return;
+            var item = _lvwLocal.SelectedItems[0];
+            if (item.Text == "..") return;
+
+            bool isDir = item.Tag is bool b && b;
+            string targetPath = Path.Combine(_txtLocalPath.Text, item.Text);
+
+            if (MessageBox.Show($"Tem certeza que deseja excluir '{item.Text}'?", "Confirmar Exclusão", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                try
+                {
+                    if (isDir) Directory.Delete(targetPath, true);
+                    else File.Delete(targetPath);
+                    LoadLocalDirectory(_txtLocalPath.Text);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Erro ao excluir: {ex.Message}", "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private void DeleteSelectedRemote()
+        {
+            if (_lvwRemote.SelectedItems.Count == 0 || !_sshManager.IsConnected) return;
+            var item = _lvwRemote.SelectedItems[0];
+            if (item.Text == "..") return;
+
+            bool isDir = item.Tag is bool b && b;
+            string targetPath = _txtRemotePath.Text.EndsWith("/") ? $"{_txtRemotePath.Text}{item.Text}" : $"{_txtRemotePath.Text}/{item.Text}";
+
+            if (MessageBox.Show($"Tem certeza que deseja excluir '{item.Text}' do servidor?", "Confirmar Exclusão", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                try
+                {
+                    if (isDir) _sshManager.DeleteRemoteDirectory(targetPath);
+                    else _sshManager.DeleteRemoteFile(targetPath);
+                    LoadRemoteDirectory(_txtRemotePath.Text);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Erro ao excluir remoto: {ex.Message}", "Erro", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
             }
         }
 

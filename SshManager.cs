@@ -86,18 +86,37 @@ namespace MySSH
             return _sftpClient?.WorkingDirectory ?? "/";
         }
 
-        public void UploadFile(string localFilePath, string remoteFilePath)
+        public long GetRemoteFileSize(string path)
+        {
+            if (_sftpClient == null || !_sftpClient.IsConnected) return 0;
+            try { return _sftpClient.GetAttributes(path).Size; }
+            catch { return 0; }
+        }
+
+        public void UploadFile(string localFilePath, string remoteFilePath, Action<ulong> progressCallback = null)
         {
             if (_sftpClient == null || !_sftpClient.IsConnected) return;
             using var fileStream = File.OpenRead(localFilePath);
-            _sftpClient.UploadFile(fileStream, remoteFilePath);
+            _sftpClient.UploadFile(fileStream, remoteFilePath, progressCallback);
         }
 
-        public void DownloadFile(string remoteFilePath, string localFilePath)
+        public void DownloadFile(string remoteFilePath, string localFilePath, Action<ulong> progressCallback = null)
         {
             if (_sftpClient == null || !_sftpClient.IsConnected) return;
             using var fileStream = File.OpenWrite(localFilePath);
-            _sftpClient.DownloadFile(remoteFilePath, fileStream);
+            _sftpClient.DownloadFile(remoteFilePath, fileStream, progressCallback);
+        }
+
+        public void DeleteRemoteFile(string path)
+        {
+            if (_sftpClient == null || !_sftpClient.IsConnected) return;
+            _sftpClient.DeleteFile(path);
+        }
+
+        public void DeleteRemoteDirectory(string path)
+        {
+            if (_sftpClient == null || !_sftpClient.IsConnected) return;
+            _sftpClient.DeleteDirectory(path);
         }
 
         public void Dispose()
