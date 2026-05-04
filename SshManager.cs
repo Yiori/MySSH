@@ -18,9 +18,15 @@ namespace MySSH
 
         public bool IsConnected => _sshClient?.IsConnected == true;
 
-        public void Connect(string host, string username, string password)
+        private uint _cols = 80;
+        private uint _rows = 24;
+
+        public void Connect(string host, string username, string password, uint cols = 80, uint rows = 24)
         {
             Disconnect();
+
+            _cols = cols > 0 ? cols : 80;
+            _rows = rows > 0 ? rows : 24;
 
             _sshClient = new SshClient(host, username, password);
             _sshClient.Connect();
@@ -28,8 +34,8 @@ namespace MySSH
             _sftpClient = new SftpClient(host, username, password);
             _sftpClient.Connect();
 
-            // Create a shell stream with standard VT100 dimensions
-            _shellStream = _sshClient.CreateShellStream("xterm", 80, 24, 800, 600, 1024);
+            // Create a shell stream with the actual xterm.js dimensions
+            _shellStream = _sshClient.CreateShellStream("xterm-256color", _cols, _rows, _cols * 8, _rows * 16, 65536);
             _shellStream.DataReceived += (s, e) =>
             {
                 var data = Encoding.UTF8.GetString(e.Data);
@@ -41,11 +47,30 @@ namespace MySSH
 
         public void ResizeTerminal(uint cols, uint rows)
         {
-            if (_shellStream != null && cols > 0 && rows > 0)
+            if (_shellStream == null || cols == 0 || rows == 0) return;
+
+            _cols = cols;
+            _rows = rows;
+
+            try
             {
-                // Terminal width and height
-                // _shellStream.SendWindowChangeRequest(cols, rows, cols * 10, rows * 10);
+                // SSH.NET 2025.x does not expose SendWindowChangeRequest on ShellStream directly.
+                // We access the internal IChannelSession via reflection.
+                var channelField = typeof(ShellStream)
+                    .GetField("_channel", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (channelField == null) return;
+
+                var channel = channelField.GetValue(_shellStream);
+                if (channel == null) return;
+
+                var resizeMethod = channel.GetType()
+                    .GetMethod("SendWindowChangeRequest",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (resizeMethod == null) return;
+
+                resizeMethod.Invoke(channel, new object[] { cols, rows, cols * 8u, rows * 16u });
             }
+            catch { /* best-effort — non-critical */ }
         }
 
         public void WriteToTerminal(string data)

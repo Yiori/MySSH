@@ -94,6 +94,8 @@ namespace MySSH
         private AppConfig _config;
         private SshManager _sshManager;
         private LocalTerminalManager _localTerminalManager;
+        private uint _termCols = 80;
+        private uint _termRows = 24;
 
         public MainForm()
         {
@@ -201,6 +203,7 @@ namespace MySSH
                 int cols = data.cols != null ? (int)data.cols : 80;
                 int rows = data.rows != null ? (int)data.rows : 24;
                 _localTerminalManager.Start(cols, rows);
+                PushActionsToLocalTerminal();
             }
             else if (data.type == "resize")
             {
@@ -254,8 +257,16 @@ namespace MySSH
 
         private void InitializeActionsTab()
         {
-            var panel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 1, ColumnCount = 1, Padding = new Padding(10) };
-            panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            // Outer panel: DataGridView takes all space, buttons on the right
+            var outer = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                RowCount = 1,
+                ColumnCount = 2,
+                Padding = new Padding(10)
+            };
+            outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            outer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38));
 
             _dgvActions = new DataGridView
             {
@@ -273,22 +284,92 @@ namespace MySSH
             {
                 Name = "colName",
                 HeaderText = "Nome da Ação",
-                FillWeight = 35
+                FillWeight = 30
             });
             _dgvActions.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "colCommand",
-                HeaderText = "Comando SSH",
-                FillWeight = 65
+                HeaderText = "Comando",
+                FillWeight = 55
             });
+
+            var colTarget = new DataGridViewComboBoxColumn
+            {
+                Name = "colTarget",
+                HeaderText = "Destino",
+                FillWeight = 15,
+                DataSource = new[] { "SSH", "Local" },
+                DefaultCellStyle = { NullValue = "SSH" }
+            };
+            _dgvActions.Columns.Add(colTarget);
 
             // Auto-save whenever the user finishes editing a cell or deletes a row
             _dgvActions.CellValueChanged += (s, e) => SaveActions();
             _dgvActions.UserDeletedRow  += (s, e) => SaveActions();
 
-            panel.Controls.Add(_dgvActions, 0, 0);
-            _tabActions.Controls.Add(panel);
+            // --- Up / Down buttons ---
+            var btnPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                Padding = new Padding(2, 0, 0, 0),
+                AutoSize = false
+            };
+
+            var btnUp = new Button
+            {
+                Text = "▲",
+                Width = 30,
+                Height = 30,
+                FlatStyle = FlatStyle.Flat
+            };
+            var btnDown = new Button
+            {
+                Text = "▼",
+                Width = 30,
+                Height = 30,
+                FlatStyle = FlatStyle.Flat
+            };
+
+            btnUp.Click += (s, e) => MoveActionRow(-1);
+            btnDown.Click += (s, e) => MoveActionRow(1);
+
+            btnPanel.Controls.Add(btnUp);
+            btnPanel.Controls.Add(btnDown);
+
+            outer.Controls.Add(_dgvActions, 0, 0);
+            outer.Controls.Add(btnPanel, 1, 0);
+            _tabActions.Controls.Add(outer);
         }
+
+        private void MoveActionRow(int direction)
+        {
+            if (_dgvActions.SelectedRows.Count == 0) return;
+
+            int idx = _dgvActions.SelectedRows[0].Index;
+            int newIdx = idx + direction;
+
+            // Bounds check — skip the "new row" placeholder at the end
+            if (newIdx < 0 || newIdx >= _dgvActions.Rows.Count - 1 || _dgvActions.Rows[idx].IsNewRow) return;
+
+            // Swap cell values column by column
+            DataGridViewRow rowA = _dgvActions.Rows[idx];
+            DataGridViewRow rowB = _dgvActions.Rows[newIdx];
+            for (int c = 0; c < _dgvActions.Columns.Count; c++)
+            {
+                object? tmp = rowA.Cells[c].Value;
+                rowA.Cells[c].Value = rowB.Cells[c].Value;
+                rowB.Cells[c].Value = tmp;
+            }
+
+            // Keep selection on the moved row
+            _dgvActions.ClearSelection();
+            _dgvActions.Rows[newIdx].Selected = true;
+            _dgvActions.CurrentCell = _dgvActions.Rows[newIdx].Cells[0];
+
+            SaveActions();
+        }
+
 
         private void InitializeSftpTab()
         {
@@ -397,7 +478,7 @@ namespace MySSH
 
             // Populate actions DataGridView
             foreach (var action in _config.CustomActions)
-                _dgvActions.Rows.Add(action.Name, action.Command);
+                _dgvActions.Rows.Add(action.Name, action.Command, string.IsNullOrEmpty(action.Target) ? "SSH" : action.Target);
             
             if (string.IsNullOrEmpty(_config.LastLocalPath))
                 _config.LastLocalPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
@@ -442,7 +523,7 @@ namespace MySSH
             try
             {
                 _btnConnect.Enabled = false;
-                _sshManager.Connect(_txtHost.Text, _txtUsername.Text, _txtPassword.Text);
+                _sshManager.Connect(_txtHost.Text, _txtUsername.Text, _txtPassword.Text, _termCols, _termRows);
                 
                 // Save config on successful connect
                 _config.Host = _txtHost.Text;
@@ -499,8 +580,15 @@ namespace MySSH
             }
             else if (data.type == "resize" || data.type == "ready")
             {
+                uint cols = data.cols != null ? (uint)data.cols : 80;
+                uint rows = data.rows != null ? (uint)data.rows : 24;
+
+                // Always keep the latest known dimensions
+                _termCols = cols;
+                _termRows = rows;
+
                 if (_sshManager.IsConnected)
-                    _sshManager.ResizeTerminal((uint)data.cols, (uint)data.rows);
+                    _sshManager.ResizeTerminal(cols, rows);
 
                 // Always push the current actions list when the terminal (re)loads
                 PushActionsToTerminal();
@@ -510,9 +598,21 @@ namespace MySSH
         private void PushActionsToTerminal()
         {
             if (_webView?.CoreWebView2 == null) return;
-            var json = JsonConvert.SerializeObject(_config.CustomActions);
-            var escaped = JsonConvert.SerializeObject(json); // produces a JSON-string literal
+            // Send only SSH-targeted actions to the remote terminal
+            var sshActions = _config.CustomActions.Where(a => string.IsNullOrEmpty(a.Target) || a.Target == "SSH").ToList();
+            var json = JsonConvert.SerializeObject(sshActions);
+            var escaped = JsonConvert.SerializeObject(json);
             _webView.CoreWebView2.ExecuteScriptAsync($"loadActions({escaped});");
+        }
+
+        private void PushActionsToLocalTerminal()
+        {
+            if (_localWebView?.CoreWebView2 == null) return;
+            // Send only Local-targeted actions to the local terminal
+            var localActions = _config.CustomActions.Where(a => a.Target == "Local").ToList();
+            var json = JsonConvert.SerializeObject(localActions);
+            var escaped = JsonConvert.SerializeObject(json);
+            _localWebView.CoreWebView2.ExecuteScriptAsync($"loadActions({escaped});");
         }
 
         private void OnTerminalDataReceived(string data)
@@ -867,14 +967,16 @@ namespace MySSH
             foreach (DataGridViewRow row in _dgvActions.Rows)
             {
                 if (row.IsNewRow) continue;
-                var name = row.Cells["colName"].Value?.ToString() ?? "";
-                var cmd  = row.Cells["colCommand"].Value?.ToString() ?? "";
+                var name    = row.Cells["colName"].Value?.ToString() ?? "";
+                var cmd     = row.Cells["colCommand"].Value?.ToString() ?? "";
+                var target  = row.Cells["colTarget"].Value?.ToString() ?? "SSH";
                 if (!string.IsNullOrWhiteSpace(name))
-                    _config.CustomActions.Add(new CustomAction { Name = name, Command = cmd });
+                    _config.CustomActions.Add(new CustomAction { Name = name, Command = cmd, Target = target });
             }
 
             ConfigManager.Save(_config);
             PushActionsToTerminal();
+            PushActionsToLocalTerminal();
         }
 
         #endregion

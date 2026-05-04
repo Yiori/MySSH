@@ -139,6 +139,9 @@
         // ── Terminal setup ──────────────────────────────────────────────
         const term = new Terminal({
             cursorBlink: true,
+            scrollback: 5000,
+            allowTransparency: false,
+            convertEol: false,
             theme: {
                 background: '#0d1117',
                 foreground: '#e2e8f0',
@@ -160,8 +163,18 @@
         const fitAddon = new FitAddon.FitAddon();
         term.loadAddon(fitAddon);
         term.open(document.getElementById('terminal-container'));
-        fitAddon.fit();
 
+        // Fit must happen after open() so the DOM has rendered
+        requestAnimationFrame(() => {
+            fitAddon.fit();
+            // Delay the ready signal so the browser has committed the layout
+            // and term.cols/term.rows are accurate
+            setTimeout(() => {
+                postToHost({ type: 'ready', cols: term.cols, rows: term.rows });
+            }, 100);
+        });
+
+        // On window resize: refit and inform the host so the PTY is resized too
         window.addEventListener('resize', () => {
             fitAddon.fit();
             postToHost({ type: 'resize', cols: term.cols, rows: term.rows });
@@ -176,8 +189,6 @@
                 window.chrome.webview.postMessage(JSON.stringify(obj));
         }
 
-        // Notify C# terminal is ready
-        postToHost({ type: 'ready', cols: term.cols, rows: term.rows });
 
         // ── FAB / Actions ───────────────────────────────────────────────
         const fabBtn    = document.getElementById('fab-btn');

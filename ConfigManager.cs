@@ -10,6 +10,7 @@ namespace MySSH
     {
         public string Name { get; set; } = "";
         public string Command { get; set; } = "";
+        public string Target { get; set; } = "SSH"; // "SSH" or "Local"
     }
 
     public class AppConfig
