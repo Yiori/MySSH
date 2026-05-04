@@ -196,9 +196,17 @@ namespace MySSH
                 string command = (string)data.command;
                 _localTerminalManager.WriteToTerminal(command + "\r");
             }
-            else if (data.type == "ready" || data.type == "resize")
+            else if (data.type == "ready")
             {
-                _localTerminalManager.Start();
+                int cols = data.cols != null ? (int)data.cols : 80;
+                int rows = data.rows != null ? (int)data.rows : 24;
+                _localTerminalManager.Start(cols, rows);
+            }
+            else if (data.type == "resize")
+            {
+                int cols = data.cols != null ? (int)data.cols : 80;
+                int rows = data.rows != null ? (int)data.rows : 24;
+                _localTerminalManager.ResizeTerminal(cols, rows);
             }
         }
 
