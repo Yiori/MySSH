@@ -196,7 +196,7 @@ namespace MySSH
             else if (data.type == "action")
             {
                 string command = (string)data.command;
-                _localTerminalManager.WriteToTerminal(command + "\r");
+                _ = SendMultilineCommandAsync(command, line => _localTerminalManager.WriteToTerminal(line + "\r"));
             }
             else if (data.type == "ready")
             {
@@ -284,28 +284,43 @@ namespace MySSH
             {
                 Name = "colName",
                 HeaderText = "Nome da Ação",
-                FillWeight = 30
+                FillWeight = 28
             });
+
+            // Command column: read-only summary (edited via the ✏ button)
             _dgvActions.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "colCommand",
-                HeaderText = "Comando",
-                FillWeight = 55
+                HeaderText = "Comando(s)",
+                FillWeight = 50,
+                ReadOnly = true
             });
 
             var colTarget = new DataGridViewComboBoxColumn
             {
                 Name = "colTarget",
                 HeaderText = "Destino",
-                FillWeight = 15,
+                FillWeight = 14,
                 DataSource = new[] { "SSH", "Local" },
                 DefaultCellStyle = { NullValue = "SSH" }
             };
             _dgvActions.Columns.Add(colTarget);
 
+            // Edit button
+            _dgvActions.Columns.Add(new DataGridViewButtonColumn
+            {
+                Name = "colEdit",
+                HeaderText = "",
+                Text = "✏",
+                UseColumnTextForButtonValue = true,
+                FillWeight = 8,
+                FlatStyle = FlatStyle.Flat
+            });
+
             // Auto-save whenever the user finishes editing a cell or deletes a row
             _dgvActions.CellValueChanged += (s, e) => SaveActions();
             _dgvActions.UserDeletedRow  += (s, e) => SaveActions();
+            _dgvActions.CellClick       += DgvActions_CellClick;
 
             // --- Up / Down buttons ---
             var btnPanel = new FlowLayoutPanel
@@ -340,6 +355,133 @@ namespace MySSH
             outer.Controls.Add(_dgvActions, 0, 0);
             outer.Controls.Add(btnPanel, 1, 0);
             _tabActions.Controls.Add(outer);
+        }
+
+        private void DgvActions_CellClick(object? sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            if (_dgvActions.Columns[e.ColumnIndex].Name != "colEdit") return;
+            if (_dgvActions.Rows[e.RowIndex].IsNewRow) return;
+
+            // Get current full command from Tag (multiline, stored as \n), fallback to cell value
+            string current = _dgvActions.Rows[e.RowIndex].Tag as string
+                          ?? _dgvActions.Rows[e.RowIndex].Cells["colCommand"].Value?.ToString()
+                          ?? "";
+            // Show real newlines in the editor
+            string editorText = current.Replace("\n", Environment.NewLine);
+
+            // Build a simple dialog
+            using var dlg = new Form
+            {
+                Text = "Editar Comandos",
+                Width = 520,
+                Height = 360,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog
+            };
+
+            var lbl = new Label
+            {
+                Text = "Digite um comando por linha. Cada linha será enviada em sequência:",
+                Dock = DockStyle.Top,
+                Height = 36,
+                Padding = new Padding(6, 8, 6, 0)
+            };
+
+            var txt = new TextBox
+            {
+                Multiline = true,
+                ScrollBars = ScrollBars.Vertical,
+                Dock = DockStyle.Fill,
+                Font = new System.Drawing.Font("Consolas", 10),
+                AcceptsReturn = true,
+                Text = editorText
+            };
+
+            var btnOk = new Button
+            {
+                Text = "OK",
+                DialogResult = DialogResult.OK,
+                Dock = DockStyle.Right,
+                Width = 80
+            };
+            var btnCancel = new Button
+            {
+                Text = "Cancelar",
+                DialogResult = DialogResult.Cancel,
+                Dock = DockStyle.Right,
+                Width = 80
+            };
+
+            var btnBar = new Panel { Dock = DockStyle.Bottom, Height = 40, Padding = new Padding(4) };
+            btnBar.Controls.Add(btnOk);
+            btnBar.Controls.Add(btnCancel);
+
+            dlg.Controls.Add(txt);
+            dlg.Controls.Add(btnBar);
+            dlg.Controls.Add(lbl);
+            dlg.AcceptButton = btnOk;
+            dlg.CancelButton = btnCancel;
+
+            if (dlg.ShowDialog(this) == DialogResult.OK)
+            {
+                // Normalize: trim blank lines at edges, store with \n separator
+                string stored = string.Join("\n",
+                    txt.Text.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None)
+                             .Select(l => l.TrimEnd()));
+
+                // Show only first line (+ indicator) in the grid
+                var lines = stored.Split('\n');
+                string preview = lines.Length > 1
+                    ? lines[0] + $"  (+{lines.Length - 1} linha(s))"
+                    : lines[0];
+
+                _dgvActions.Rows[e.RowIndex].Cells["colCommand"].Value = preview;
+
+                // Save full command to config immediately
+                var name   = _dgvActions.Rows[e.RowIndex].Cells["colName"].Value?.ToString() ?? "";
+                var target = _dgvActions.Rows[e.RowIndex].Cells["colTarget"].Value?.ToString() ?? "SSH";
+
+                // Find matching entry in config by row position
+                _config.CustomActions.Clear();
+                for (int r = 0; r < _dgvActions.Rows.Count; r++)
+                {
+                    var row = _dgvActions.Rows[r];
+                    if (row.IsNewRow) continue;
+                    var rName   = row.Cells["colName"].Value?.ToString() ?? "";
+                    var rTarget = row.Cells["colTarget"].Value?.ToString() ?? "SSH";
+
+                    // For the edited row, use the new stored command
+                    string rCmd = (r == e.RowIndex)
+                        ? stored
+                        : (row.Tag as string ?? row.Cells["colCommand"].Value?.ToString() ?? "");
+
+                    row.Tag = rCmd; // cache full command on the row
+
+                    if (!string.IsNullOrWhiteSpace(rName))
+                        _config.CustomActions.Add(new CustomAction { Name = rName, Command = rCmd, Target = rTarget });
+                }
+
+                // Also update the preview display for non-edited rows that have cached tag
+                for (int r = 0; r < _dgvActions.Rows.Count; r++)
+                {
+                    if (_dgvActions.Rows[r].IsNewRow || r == e.RowIndex) continue;
+                    string? cached = _dgvActions.Rows[r].Tag as string;
+                    if (cached != null)
+                    {
+                        var ls = cached.Split('\n');
+                        _dgvActions.Rows[r].Cells["colCommand"].Value = ls.Length > 1
+                            ? ls[0] + $"  (+{ls.Length - 1} linha(s))"
+                            : ls[0];
+                    }
+                }
+
+                ConfigManager.Save(_config);
+                PushActionsToTerminal();
+                PushActionsToLocalTerminal();
+            }
         }
 
         private void MoveActionRow(int direction)
@@ -478,7 +620,17 @@ namespace MySSH
 
             // Populate actions DataGridView
             foreach (var action in _config.CustomActions)
-                _dgvActions.Rows.Add(action.Name, action.Command, string.IsNullOrEmpty(action.Target) ? "SSH" : action.Target);
+            {
+                // Show first line + indicator for multiline commands
+                var lines = action.Command.Split('\n');
+                string preview = lines.Length > 1
+                    ? lines[0] + $"  (+{lines.Length - 1} linha(s))"
+                    : lines[0];
+                int rowIdx = _dgvActions.Rows.Add(preview, preview, string.IsNullOrEmpty(action.Target) ? "SSH" : action.Target);
+                // Store full command on row Tag for later retrieval
+                _dgvActions.Rows[rowIdx].Cells["colCommand"].Value = preview;
+                _dgvActions.Rows[rowIdx].Tag = action.Command;
+            }
             
             if (string.IsNullOrEmpty(_config.LastLocalPath))
                 _config.LastLocalPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
@@ -575,8 +727,7 @@ namespace MySSH
             else if (data.type == "action" && _sshManager.IsConnected)
             {
                 string command = (string)data.command;
-                // Send the command followed by Enter (\r is what SSH shells expect)
-                _sshManager.WriteToTerminal(command + "\r");
+                _ = SendMultilineCommandAsync(command, line => _sshManager.WriteToTerminal(line + "\r"));
             }
             else if (data.type == "resize" || data.type == "ready")
             {
@@ -592,6 +743,17 @@ namespace MySSH
 
                 // Always push the current actions list when the terminal (re)loads
                 PushActionsToTerminal();
+            }
+        }
+
+        private static async Task SendMultilineCommandAsync(string command, Action<string> sendLine)
+        {
+            var lines = command.Split(new[] { '\n' }, StringSplitOptions.None);
+            foreach (var line in lines)
+            {
+                sendLine(line);
+                if (lines.Length > 1)
+                    await Task.Delay(80); // small delay between lines so shell processes each
             }
         }
 
@@ -967,9 +1129,10 @@ namespace MySSH
             foreach (DataGridViewRow row in _dgvActions.Rows)
             {
                 if (row.IsNewRow) continue;
-                var name    = row.Cells["colName"].Value?.ToString() ?? "";
-                var cmd     = row.Cells["colCommand"].Value?.ToString() ?? "";
-                var target  = row.Cells["colTarget"].Value?.ToString() ?? "SSH";
+                var name   = row.Cells["colName"].Value?.ToString() ?? "";
+                // Full command is cached in row.Tag; fall back to cell value for single-line entries
+                var cmd    = row.Tag as string ?? row.Cells["colCommand"].Value?.ToString() ?? "";
+                var target = row.Cells["colTarget"].Value?.ToString() ?? "SSH";
                 if (!string.IsNullOrWhiteSpace(name))
                     _config.CustomActions.Add(new CustomAction { Name = name, Command = cmd, Target = target });
             }

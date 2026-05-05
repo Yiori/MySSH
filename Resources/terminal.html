@@ -235,6 +235,7 @@
                 btn.addEventListener('click', () => {
                     closeMenu();
                     postToHost({ type: 'action', command: action.Command });
+                    term.focus();
                 });
                 menu.appendChild(btn);
             });
